@@ -36,11 +36,16 @@ ASSET_DICT = {
     "금 현물 (원화 기준)": "GOLD_KRW", "은 현물 (달러 기준)": "SI=F"
 }
 
-@st.cache_data(ttl=3600) # 데이터 로딩 속도 단축을 위한 캐시 기능
+@st.cache_data(ttl=3600)
 def get_historical_data(ticker, period, interval):
     if ticker == "GOLD_KRW":
         gold = yf.Ticker("GC=F").history(period=period, interval=interval)
         usdkrw = yf.Ticker("KRW=X").history(period=period, interval=interval)
+        
+        # 야후파이낸스 MultiIndex 에러 방지
+        if isinstance(gold.columns, pd.MultiIndex): gold.columns = gold.columns.get_level_values(0)
+        if isinstance(usdkrw.columns, pd.MultiIndex): usdkrw.columns = usdkrw.columns.get_level_values(0)
+            
         if gold.empty or usdkrw.empty: return pd.DataFrame()
         if getattr(gold.index, 'tz', None) is not None: gold.index = gold.index.tz_localize(None)
         if getattr(usdkrw.index, 'tz', None) is not None: usdkrw.index = usdkrw.index.tz_localize(None)
@@ -51,6 +56,7 @@ def get_historical_data(ticker, period, interval):
         df = df.dropna()
     else:
         df = yf.Ticker(ticker).history(period=period, interval=interval)
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         if df.empty: return df
         if getattr(df.index, 'tz', None) is not None: df.index = df.index.tz_localize(None)
     df = df[df.index.normalize() <= pd.to_datetime(cutoff_str)]
@@ -74,7 +80,13 @@ def add_indicators(df, ma_list):
         diff = df.index[-1] - df.index[-2]
         future_idx = [last_date + diff * i for i in range(1, 27)]
         future_df = pd.DataFrame(index=future_idx, columns=df.columns)
+        
         df_ext = pd.concat([df, future_df])
+        
+        # [핵심 에러 해결] 모든 데이터를 강제로 숫자형(float)으로 변환
+        for col in df_ext.columns:
+            df_ext[col] = pd.to_numeric(df_ext[col], errors='coerce')
+            
         df_ext['Senkou_A'] = senkou_a_un.reindex(df_ext.index).shift(26)
         df_ext['Senkou_B'] = senkou_b_un.reindex(df_ext.index).shift(26)
         return df_ext
@@ -95,8 +107,7 @@ def draw_chart(df, ax, title, ma_list):
             
     mpf.plot(df, type='candle', ax=ax, addplot=apds, ylabel='')
     
-    ax.text(0.02, 0.97, f"{formatted_date} 17시 기준", transform=ax.transAxes, ha='left', va='top', fontsize=22, fontweight='heavy', color='#333333', bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.85, edgecolor='gray'), zorder=10)
-    ax.text(0.98, 0.97, title, transform=ax.transAxes, ha='right', va='top', fontsize=22, fontweight='heavy', color='#333333', bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.85, edgecolor='gray'), zorder=10)
+    ax.text(0.02, 0.97, f"{formatted_date} 17시 기준\n{title}", transform=ax.transAxes, ha='left', va='top', fontsize=22, fontweight='heavy', color='#333333', bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.85, edgecolor='gray'), zorder=10)
     
     ax.yaxis.tick_right()
     ax.yaxis.set_label_position("right")
@@ -248,5 +259,4 @@ if st.button("차트 그리기"):
             draw_chart(df_monthly, ax3, f"{selected_asset} (월봉)", ma_list)
 
             plt.tight_layout()
-            # 어플 화면에 완성된 이미지 표출!
             st.pyplot(fig)
